@@ -76,8 +76,10 @@ const (
 	metaParityCheckedAt   = "parity_checked_at"
 	metaToolRollupsReady  = "tool_rollups_ready"
 	metaToolRollupVersion = "tool_rollup_normalization_version"
-	toolRollupVersion     = "2"
-	costBackfillStep      = 50000
+	// Bump when dashboardToolSQL normalization changes. Existing deployments
+	// otherwise keep serving a ready table built with the old classifier.
+	toolRollupVersion = "3"
+	costBackfillStep  = 50000
 )
 
 // ---- Hour locks (part B) ----
