@@ -17,6 +17,7 @@ import (
 	"github.com/redhat-et/pricetag-metering/internal/pricing"
 	"github.com/redhat-et/pricetag-metering/internal/storage"
 	"github.com/redhat-et/pricetag-metering/internal/tracing"
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 func main() {
@@ -328,9 +329,17 @@ func main() {
 	mux.HandleFunc("/api/v1/org/charts", dashboardAPI(orgHandler.HandleOrgCharts))
 	mux.HandleFunc("/api/v1/org/person", dashboardAPI(orgHandler.HandleOrgPerson))
 
+	var handler http.Handler = mux
+	if tracing.Enabled() {
+		handler = otelhttp.NewHandler(mux, "",
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string {
+				return r.Method + " " + r.URL.Path
+			}),
+		)
+	}
 	server := &http.Server{
 		Addr:              ":" + cfg.Port,
-		Handler:           mux,
+		Handler:           handler,
 		ReadHeaderTimeout: 5 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		WriteTimeout:      30 * time.Second,
