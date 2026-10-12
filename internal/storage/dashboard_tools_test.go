@@ -24,7 +24,7 @@ func TestDashboardTool(t *testing.T) {
 		{"GitHubCopilotChat/0.68.0", "GitHubCopilotChat"},
 		{"hindsight/openai-compatible/0.10.3", "hindsight"},
 		{"curl/8.0", "curl"},
-		{"python-requests/2.0", "Other"},
+		{"python-requests/2.0", "python-requests"},
 		{"", "Other"},
 	}
 	for _, tt := range tests {
