@@ -151,7 +151,7 @@ const dashboardToolSQL = `CASE
 	WHEN btrim(lower(coalesce(e.user_agent, ''))) LIKE 'claude-cli%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'claude-code%' THEN 'Claude Code'
 	WHEN btrim(lower(coalesce(e.user_agent, ''))) LIKE 'codex-tui%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'codex/%' THEN 'Codex'
 	WHEN btrim(lower(coalesce(e.user_agent, ''))) = 'opencode' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'opencode/%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'opencode-%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'opencode.%' THEN 'OpenCode'
-	WHEN btrim(lower(coalesce(e.user_agent, ''))) = 'pi' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'pi/%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'pi-%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'pi.%' THEN 'Pi'
+	WHEN btrim(lower(coalesce(e.user_agent, ''))) = 'pi' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'pi/%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'pi-%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'pi.%' OR btrim(lower(coalesce(e.user_agent, ''))) LIKE 'pi %' THEN 'Pi'
 	WHEN btrim(lower(coalesce(e.user_agent, ''))) LIKE 'curl/%' THEN 'curl'
 	ELSE 'Other'
 END`

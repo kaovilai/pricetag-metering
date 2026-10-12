@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1093,37 +1092,14 @@ func (s *Store) GetDashboardModels(ctx context.Context, since, until time.Time, 
 	return result, nil
 }
 
-// GetDashboardTools aggregates by normalized client tool. Rollup reads use
-// usage_hourly so this chart does not add a full usage_events scan to every
-// dashboard refresh; raw events are used only until rollups are live.
+// GetDashboardTools aggregates by normalized client tool directly from the
+// source ledger. This intentionally does not read usage_tool_hourly: during a
+// rolling deployment, old pods can still write the old normalization while
+// new pods use the new one. Computing the pie from raw user_agent values keeps
+// the result consistent without requiring a coordinated rollup-table rebuild.
 func (s *Store) GetDashboardTools(ctx context.Context, since, until time.Time, group, user, model string) ([]ToolSummary, error) {
-	if s.rollupsLive() && s.ToolRollupsReady() {
-		rows, err := s.reader().QueryContext(ctx, `
-			SELECT COALESCE(e.tool, 'Other'), SUM(e.requests), SUM(e.total_tokens),
-				COALESCE(ROUND(SUM(e.cost_usd)::numeric, 2), 0)
-			FROM usage_tool_hourly e
-			WHERE e.hour >= date_trunc('hour', $1::timestamptz) AND e.hour < $2
-				AND ($3 = '' OR e.group_name = $3)
-				AND ($4 = '' OR e.username = ANY(string_to_array($4, ',')))
-				AND ($5 = '' OR e.model = $5)
-			GROUP BY COALESCE(e.tool, 'Other')
-			ORDER BY SUM(e.total_tokens) DESC`, since, until, group, user, model)
-		if err != nil {
-			return nil, err
-		}
-		defer rows.Close()
-		var result []ToolSummary
-		for rows.Next() {
-			var item ToolSummary
-			if err := rows.Scan(&item.Tool, &item.Requests, &item.TotalTokens, &item.CostUSD); err != nil {
-				return nil, err
-			}
-			result = append(result, item)
-		}
-		return result, rows.Err()
-	}
 	query := fmt.Sprintf(`
-		SELECT COALESCE(e.user_agent, ''),
+		SELECT %s,
 			COUNT(*),
 			COALESCE(SUM(e.total_tokens), 0),
 			COALESCE(ROUND(SUM(%s)::numeric, 2), 0)
@@ -1133,40 +1109,25 @@ func (s *Store) GetDashboardTools(ctx context.Context, since, until time.Time, g
 			AND ($3 = '' OR e.group_name = $3)
 			AND ($4 = '' OR e.username = ANY(string_to_array($4, ',')))
 			AND ($5 = '' OR e.model = $5)
-		GROUP BY COALESCE(e.user_agent, '')`, costUSDExpr)
+		GROUP BY %s
+		ORDER BY SUM(e.total_tokens) DESC`, dashboardToolSQL, costUSDExpr, dashboardToolSQL)
 	rows, err := s.reader().QueryContext(ctx, query, since, until, group, user, model)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	byTool := make(map[string]*ToolSummary)
+	var result []ToolSummary
 	for rows.Next() {
-		var userAgent string
-		var requests int
-		var totalTokens int64
-		var costUSD float64
-		if err := rows.Scan(&userAgent, &requests, &totalTokens, &costUSD); err != nil {
+		var item ToolSummary
+		if err := rows.Scan(&item.Tool, &item.Requests, &item.TotalTokens, &item.CostUSD); err != nil {
 			return nil, err
 		}
-		tool := dashboardTool(userAgent)
-		item := byTool[tool]
-		if item == nil {
-			item = &ToolSummary{Tool: tool}
-			byTool[tool] = item
-		}
-		item.Requests += requests
-		item.TotalTokens += totalTokens
-		item.CostUSD += costUSD
+		result = append(result, item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
 	}
-	result := make([]ToolSummary, 0, len(byTool))
-	for _, item := range byTool {
-		result = append(result, *item)
-	}
-	sort.Slice(result, func(i, j int) bool { return result[i].TotalTokens > result[j].TotalTokens })
 	return result, nil
 }
 
@@ -1179,7 +1140,7 @@ func dashboardTool(userAgent string) string {
 		return "Codex"
 	case ua == "opencode" || strings.HasPrefix(ua, "opencode/") || strings.HasPrefix(ua, "opencode-") || strings.HasPrefix(ua, "opencode."):
 		return "OpenCode"
-	case ua == "pi" || strings.HasPrefix(ua, "pi/") || strings.HasPrefix(ua, "pi-") || strings.HasPrefix(ua, "pi."):
+	case ua == "pi" || strings.HasPrefix(ua, "pi/") || strings.HasPrefix(ua, "pi-") || strings.HasPrefix(ua, "pi.") || strings.HasPrefix(ua, "pi "):
 		return "Pi"
 	case strings.HasPrefix(ua, "curl/"):
 		return "curl"
