@@ -21,6 +21,8 @@ func TestDashboardTool(t *testing.T) {
 		{"OpenAI/Python 2.43.0", "OpenAI"},
 		{"Charm-Crush/v0.0.0-20261012010324-03f5dcbe64e8 (https://charm.land/crush)", "Charm-Crush"},
 		{"omp/18.10.2", "omp"},
+		{"GitHubCopilotChat/0.68.0", "GitHubCopilotChat"},
+		{"hindsight/openai-compatible/0.10.3", "hindsight"},
 		{"curl/8.0", "curl"},
 		{"python-requests/2.0", "Other"},
 		{"", "Other"},
