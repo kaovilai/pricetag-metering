@@ -520,12 +520,12 @@ async function refresh(force){
      const [ov,gr,chartUs,mo,tools,tl,rc,rosterCat,modelCat]=await Promise.all([
        api('/api/v1/dashboard/overview?'+filters+'&ref='+encodeURIComponent(savingsRef),force),
        api('/api/v1/dashboard/groups?'+filters,force),
-       api('/api/v1/dashboard/users?'+filters+'&sort='+chartSort+'&order=desc&limit=10&offset=0&ref='+encodeURIComponent(savingsRef),force),
+       api('/api/v1/dashboard/users?'+filters+'&sort='+chartSort+'&order=desc&limit=10&offset=0&savings=false',force),
       api('/api/v1/dashboard/models?'+filters,force),
       api('/api/v1/dashboard/tools?'+filters,force),
       api('/api/v1/dashboard/timeline?'+filters+'&group_by='+tlGroupBy,force),
        api('/api/v1/dashboard/recent?limit=20'+gf+uf+mf,force),
-       api('/api/v1/dashboard/users?'+rangeOnly+'&limit=200',force),
+       api('/api/v1/dashboard/users?'+rangeOnly+'&limit=200&savings=false',force),
        api('/api/v1/dashboard/models?'+rangeOnly,force),
       ]);
   cachedOverview=ov;
