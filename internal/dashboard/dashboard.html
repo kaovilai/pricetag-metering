@@ -966,7 +966,7 @@ async function refreshUserChartOnly(){
   var gf=groupFilter?'&group='+encodeURIComponent(groupFilter):'';
   var mf=modelFilter?'&model='+encodeURIComponent(modelFilter):'';
   var sort=userPieMetric==='cost'?'cost_usd':userPieMetric==='requests'?'requests':'total_tokens';
-  var rows=await api('/api/v1/dashboard/users?range='+r+gf+uf+mf+'&sort='+sort+'&order=desc&limit=10&offset=0&ref='+encodeURIComponent(savingsRef),false);
+  var rows=await api('/api/v1/dashboard/users?range='+r+gf+uf+mf+'&sort='+sort+'&order=desc&limit=10&offset=0&savings=false',false);
   chartUsers=collapseUsageUsers(Array.isArray(rows)?rows:[]);
   renderUserCostChart();
 }

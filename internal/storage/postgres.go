@@ -717,7 +717,13 @@ func (s *Store) GetDashboardUsers(ctx context.Context, since, until time.Time, g
 			LIMIT $6 OFFSET $7`, displayNameExpr, costUSDExpr, displayNameExpr, sortExpr, direction)
 	}
 
-	rows, err := s.reader().QueryContext(ctx, query, since, until, group, user, model, limit, offset, refModel, search)
+	var rows *sql.Rows
+	var err error
+	if includeSavings {
+		rows, err = s.reader().QueryContext(ctx, query, since, until, group, user, model, limit, offset, refModel, search)
+	} else {
+		rows, err = s.reader().QueryContext(ctx, query, since, until, group, user, model, limit, offset, search)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -756,18 +762,18 @@ func dashboardUsersWithoutSavingsSQL(rollup bool, displayNameExpr, sortExpr, dir
 	return fmt.Sprintf(`
 		SELECT e.username,
 			%s,
-			COALESCE(e.group_name, ''),
-			%s as requests,
-			COALESCE(SUM(e.prompt_tokens),0),
-			COALESCE(SUM(e.completion_tokens),0),
-			COALESCE(SUM(e.total_tokens),0),
-			COALESCE(%s, 0),
-			0::numeric
+			COALESCE(e.group_name, '') AS group_name,
+			%s AS requests,
+			COALESCE(SUM(e.prompt_tokens),0) AS prompt_tokens,
+			COALESCE(SUM(e.completion_tokens),0) AS completion_tokens,
+			COALESCE(SUM(e.total_tokens),0) AS total_tokens,
+			COALESCE(%s, 0) AS cost_usd,
+			0::numeric AS saved_usd
 		FROM %s
 		LEFT JOIN (SELECT l.username AS username, pu.tags->>'first_name' AS first_name, pu.tags->>'last_name' AS last_name
 			FROM partner_user_logins l JOIN partner_users pu ON pu.user_id = l.user_id) up ON up.username = e.username
 		WHERE %s AND ($3 = '' OR e.group_name = $3) AND ($4 = '' OR e.username = ANY(string_to_array($4, ','))) AND ($5 = '' OR e.model = $5)
-			AND ($9 = '' OR lower(e.username) LIKE '%%' || lower($9) || '%%' OR lower(TRIM(CONCAT_WS(' ', up.first_name, up.last_name))) LIKE '%%' || lower($9) || '%%')
+			AND ($8 = '' OR lower(e.username) LIKE '%%' || lower($8) || '%%' OR lower(TRIM(CONCAT_WS(' ', up.first_name, up.last_name))) LIKE '%%' || lower($8) || '%%')
 		GROUP BY e.username, %s, COALESCE(e.group_name, '')
 		ORDER BY %s %s, e.username ASC, COALESCE(e.group_name, '') ASC
 		LIMIT $6 OFFSET $7`, displayNameExpr, requests, cost, from, window, displayNameExpr, sortExpr, direction)
