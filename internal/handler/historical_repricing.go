@@ -29,6 +29,7 @@ func (h *HistoricalRepricingHandler) Handle(w http.ResponseWriter, r *http.Reque
 		From        string `json:"from"`
 		Until       string `json:"until"`
 		Policy      string `json:"policy_version"`
+		PolicyHash  string `json:"policy_hash"`
 		Confirm     bool   `json:"confirm"`
 	}
 	if !decodeJSON(w, r, &req) {
@@ -46,7 +47,7 @@ func (h *HistoricalRepricingHandler) Handle(w http.ResponseWriter, r *http.Reque
 	}
 	result, err := h.store.RepriceHistorical(r.Context(), quotaAdminActor(r), storage.HistoricalRepriceRequest{
 		Provider: req.Provider, Model: req.Model, ModelPrefix: req.ModelPrefix,
-		From: from, Until: until, Policy: req.Policy, Confirm: req.Confirm,
+		From: from, Until: until, Policy: req.Policy, PolicyHash: req.PolicyHash, Confirm: req.Confirm,
 	})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)

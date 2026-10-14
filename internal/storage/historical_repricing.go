@@ -2,9 +2,16 @@ package storage
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/redhat-et/pricetag-metering/internal/pricing"
 )
+
+const maxHistoricalRepriceRows int64 = 100_000
 
 // HistoricalRepriceRequest scopes a deterministic recomputation from token
 // counts and the current effective model_pricing rows. It never multiplies an
@@ -16,17 +23,29 @@ type HistoricalRepriceRequest struct {
 	From        time.Time `json:"from"`
 	Until       time.Time `json:"until"`
 	Policy      string    `json:"policy_version"`
+	PolicyHash  string    `json:"policy_hash"`
 	Confirm     bool      `json:"confirm"`
 }
 
 type HistoricalRepriceResult struct {
-	Rows     int64     `json:"rows"`
-	OldTotal float64   `json:"old_total_usd"`
-	NewTotal float64   `json:"new_total_usd"`
-	From     time.Time `json:"from"`
-	Until    time.Time `json:"until"`
-	Applied  bool      `json:"applied"`
-	Policy   string    `json:"policy_version,omitempty"`
+	Rows       int64     `json:"rows"`
+	OldTotal   float64   `json:"old_total_usd"`
+	NewTotal   float64   `json:"new_total_usd"`
+	From       time.Time `json:"from"`
+	Until      time.Time `json:"until"`
+	Applied    bool      `json:"applied"`
+	Policy     string    `json:"policy_version,omitempty"`
+	PolicyHash string    `json:"policy_hash,omitempty"`
+	MaxRows    int64     `json:"max_rows"`
+}
+
+func discountPolicyHash(policy pricing.DiscountPolicy) (string, error) {
+	raw, err := json.Marshal(policy)
+	if err != nil {
+		return "", fmt.Errorf("marshal discount policy: %w", err)
+	}
+	sum := sha256.Sum256(raw)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 func buildRepriceWhere(req HistoricalRepriceRequest) (string, []any, error) {
@@ -80,6 +99,13 @@ func (s *Store) RepriceHistorical(ctx context.Context, actor string, req Histori
 	if req.Policy != activePolicy.Version {
 		return HistoricalRepriceResult{}, fmt.Errorf("policy_version %q is not the active policy %q", req.Policy, activePolicy.Version)
 	}
+	policyHash, err := discountPolicyHash(activePolicy)
+	if err != nil {
+		return HistoricalRepriceResult{}, err
+	}
+	if req.Confirm && req.PolicyHash != policyHash {
+		return HistoricalRepriceResult{}, fmt.Errorf("policy_hash does not match the active policy; run a new dry run")
+	}
 	where, args, err := buildRepriceWhere(req)
 	if err != nil {
 		return HistoricalRepriceResult{}, err
@@ -89,14 +115,21 @@ func (s *Store) RepriceHistorical(ctx context.Context, actor string, req Histori
 		WHERE %s`, costUSDExpr, where[5:])
 	var result HistoricalRepriceResult
 	result.From, result.Until, result.Policy = req.From, req.Until, req.Policy
+	result.PolicyHash, result.MaxRows = policyHash, maxHistoricalRepriceRows
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&result.Rows, &result.OldTotal, &result.NewTotal); err != nil {
 		return HistoricalRepriceResult{}, err
 	}
 	if !req.Confirm {
 		return result, nil
 	}
+	if result.Rows > maxHistoricalRepriceRows {
+		return HistoricalRepriceResult{}, fmt.Errorf("repricing affects %d rows; maximum per operation is %d", result.Rows, maxHistoricalRepriceRows)
+	}
 
 	fromHour, untilHour := req.From.UTC().Truncate(time.Hour), req.Until.UTC().Truncate(time.Hour)
+	if req.Until.UTC().After(untilHour) {
+		untilHour = untilHour.Add(time.Hour)
+	}
 	if !fromHour.Before(untilHour) {
 		untilHour = fromHour.Add(time.Hour)
 	}
