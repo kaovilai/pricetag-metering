@@ -558,6 +558,8 @@ function friendlyClient(ua){
    if(normalized.startsWith('openai/')) return 'OpenAI';
    if(normalized.startsWith('omp/')) return 'omp';
    if(normalized.startsWith('curl/')) return 'curl';
+   const slash=String(ua||'').indexOf('/');
+   if(slash>0)return String(ua).slice(0,slash).trim();
    return 'Other';
 }
 

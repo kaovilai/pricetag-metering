@@ -1171,7 +1171,8 @@ func (s *Store) GetDashboardTools(ctx context.Context, since, until time.Time, g
 }
 
 func dashboardTool(userAgent string) string {
-	ua := strings.ToLower(strings.TrimSpace(userAgent))
+	raw := strings.TrimSpace(userAgent)
+	ua := strings.ToLower(raw)
 	switch {
 	case strings.HasPrefix(ua, "claude-cli"), strings.HasPrefix(ua, "claude-code"):
 		return "Claude Code"
@@ -1190,6 +1191,9 @@ func dashboardTool(userAgent string) string {
 	case strings.HasPrefix(ua, "curl/"):
 		return "curl"
 	default:
+		if slash := strings.Index(raw, "/"); slash > 0 {
+			return strings.TrimSpace(raw[:slash])
+		}
 		return "Other"
 	}
 }

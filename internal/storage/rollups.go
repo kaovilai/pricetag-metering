@@ -78,7 +78,7 @@ const (
 	metaToolRollupVersion = "tool_rollup_normalization_version"
 	// Bump when dashboardToolSQL normalization changes. Existing deployments
 	// otherwise keep serving a ready table built with the old classifier.
-	toolRollupVersion = "4"
+	toolRollupVersion = "5"
 	costBackfillStep  = 50000
 )
 
@@ -160,7 +160,9 @@ const dashboardToolSQL = `CASE
 	WHEN btrim(lower(coalesce(e.user_agent, ''))) LIKE 'openai/%' THEN 'OpenAI'
 	WHEN btrim(lower(coalesce(e.user_agent, ''))) LIKE 'omp/%' THEN 'omp'
 	WHEN btrim(lower(coalesce(e.user_agent, ''))) LIKE 'curl/%' THEN 'curl'
-	ELSE 'Other'
+	ELSE CASE WHEN position('/' IN btrim(coalesce(e.user_agent, ''))) > 1
+		THEN split_part(btrim(e.user_agent), '/', 1)
+		ELSE 'Other' END
 END`
 
 var rebuildHourSQL = fmt.Sprintf(`
