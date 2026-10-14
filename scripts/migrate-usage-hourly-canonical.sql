@@ -53,6 +53,8 @@ BEGIN
 
   ALTER TABLE usage_hourly RENAME TO usage_hourly_tool_legacy;
   ALTER INDEX usage_hourly_key RENAME TO usage_hourly_tool_legacy_key;
+  ALTER INDEX IF EXISTS idx_usage_hourly_hour RENAME TO idx_usage_hourly_tool_legacy_hour;
+  ALTER INDEX IF EXISTS idx_usage_hourly_user_hour RENAME TO idx_usage_hourly_tool_legacy_user_hour;
   ALTER TABLE usage_hourly_canonical RENAME TO usage_hourly;
   CREATE UNIQUE INDEX usage_hourly_key
     ON usage_hourly (hour, username, group_name, model, provider);
