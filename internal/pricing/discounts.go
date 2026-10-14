@@ -101,8 +101,25 @@ func ApplyDiscounts(prices []ModelPrice, policy DiscountPolicy) ([]ModelPrice, [
 }
 
 func matchesDiscount(price ModelPrice, rule DiscountRule) bool {
-	provider := strings.ToLower(strings.TrimSpace(rule.Provider))
+	provider := normalizeDiscountProvider(rule.Provider)
 	model := strings.ToLower(price.Model)
-	return (provider == "" || strings.EqualFold(price.Provider, provider)) &&
+	return (provider == "" || normalizeDiscountProvider(price.Provider) == provider) &&
 		(rule.ModelPrefix == "" || strings.HasPrefix(model, strings.ToLower(rule.ModelPrefix)))
+}
+
+// normalizeDiscountProvider keeps policy matching stable across provider names
+// emitted by LiteLLM, the gateway, and older seeded rows. Vertex rows have
+// appeared as vertex, vertex_ai, and vertex_ai-language-models.
+func normalizeDiscountProvider(provider string) string {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	switch {
+	case p == "", p == "*":
+		return ""
+	case p == "openai" || strings.HasPrefix(p, "openai_") || strings.HasPrefix(p, "openai-") || strings.HasPrefix(p, "openai/"):
+		return "openai"
+	case p == "google" || p == "gemini" || strings.HasPrefix(p, "vertex") || strings.HasPrefix(p, "google-") || strings.HasPrefix(p, "google_"):
+		return "vertex"
+	default:
+		return p
+	}
 }
