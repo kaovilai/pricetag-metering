@@ -50,8 +50,10 @@ func buildRepriceWhere(req HistoricalRepriceRequest) (string, []any, error) {
 		where = append(where, fmt.Sprintf("e.model = $%d", len(args)))
 	}
 	if req.ModelPrefix != "" {
-		args = append(args, req.ModelPrefix+"%")
-		where = append(where, fmt.Sprintf("e.model LIKE $%d", len(args)))
+		// Compare the prefix literally; LIKE would interpret user-supplied
+		// '%' and '_' as wildcards and could reprice unintended models.
+		args = append(args, req.ModelPrefix)
+		where = append(where, fmt.Sprintf("LEFT(e.model, LENGTH($%d)) = $%d", len(args), len(args)))
 	}
 	return " AND " + joinSQL(where), args, nil
 }
@@ -68,6 +70,16 @@ func joinSQL(parts []string) string {
 }
 
 func (s *Store) RepriceHistorical(ctx context.Context, actor string, req HistoricalRepriceRequest) (HistoricalRepriceResult, error) {
+	if req.Policy == "" {
+		return HistoricalRepriceResult{}, fmt.Errorf("policy_version is required")
+	}
+	activePolicy, err := s.GetPricingDiscountPolicy(ctx)
+	if err != nil {
+		return HistoricalRepriceResult{}, fmt.Errorf("load active pricing policy: %w", err)
+	}
+	if req.Policy != activePolicy.Version {
+		return HistoricalRepriceResult{}, fmt.Errorf("policy_version %q is not the active policy %q", req.Policy, activePolicy.Version)
+	}
 	where, args, err := buildRepriceWhere(req)
 	if err != nil {
 		return HistoricalRepriceResult{}, err
@@ -84,45 +96,64 @@ func (s *Store) RepriceHistorical(ctx context.Context, actor string, req Histori
 		return result, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	defer func() { _ = tx.Rollback() }()
-	update := fmt.Sprintf(`UPDATE usage_events u SET cost_usd = r.new_cost
-		FROM (SELECT e.id, %s AS new_cost FROM usage_events e LEFT JOIN model_pricing p ON p.model=e.model WHERE %s) r
-		WHERE u.id=r.id`, costUSDExpr, where[5:])
-	if _, err := tx.ExecContext(ctx, update, args...); err != nil {
-		return HistoricalRepriceResult{}, err
-	}
 	fromHour, untilHour := req.From.UTC().Truncate(time.Hour), req.Until.UTC().Truncate(time.Hour)
 	if !fromHour.Before(untilHour) {
 		untilHour = fromHour.Add(time.Hour)
 	}
-	if _, err := tx.ExecContext(ctx, rebuildHourLockSQL, fromHour, untilHour); err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM usage_hourly WHERE hour >= $1 AND hour < $2`, fromHour, untilHour); err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	if _, err := tx.ExecContext(ctx, rebuildHourSQL, fromHour, untilHour); err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	if _, err := tx.ExecContext(ctx, rebuildToolHourLockSQL, fromHour, untilHour); err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	if _, err := tx.ExecContext(ctx, rebuildToolHourSQL, fromHour, untilHour); err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	if err := s.auditTx(ctx, tx, actor, "pricing.historical_reprice", "usage_events", map[string]any{
-		"provider": req.Provider, "model": req.Model, "model_prefix": req.ModelPrefix,
-		"from": req.From, "until": req.Until, "policy_version": req.Policy,
-		"rows": result.Rows, "old_total_usd": result.OldTotal, "new_total_usd": result.NewTotal,
-	}); err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	if err := tx.Commit(); err != nil {
-		return HistoricalRepriceResult{}, err
+	// Apply one UTC hour per transaction. This bounds locks, WAL, and rollback
+	// scope even when an operator requests a long historical range.
+	for hour := fromHour; hour.Before(untilHour); hour = hour.Add(time.Hour) {
+		chunkUntil := hour.Add(time.Hour)
+		if chunkUntil.After(untilHour) {
+			chunkUntil = untilHour
+		}
+		chunkReq := req
+		if chunkReq.From.Before(hour) {
+			chunkReq.From = hour
+		}
+		if chunkReq.Until.After(chunkUntil) {
+			chunkReq.Until = chunkUntil
+		}
+		chunkWhere, chunkArgs, err := buildRepriceWhere(chunkReq)
+		if err != nil {
+			return HistoricalRepriceResult{}, err
+		}
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return HistoricalRepriceResult{}, err
+		}
+		update := fmt.Sprintf(`UPDATE usage_events u SET cost_usd = r.new_cost
+			FROM (SELECT e.id, %s AS new_cost FROM usage_events e LEFT JOIN model_pricing p ON p.model=e.model WHERE %s) r
+			WHERE u.id=r.id`, costUSDExpr, chunkWhere[5:])
+		if _, err = tx.ExecContext(ctx, update, chunkArgs...); err == nil {
+			_, err = tx.ExecContext(ctx, rebuildHourLockSQL, hour, chunkUntil)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, `DELETE FROM usage_hourly WHERE hour >= $1 AND hour < $2`, hour, chunkUntil)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, rebuildHourSQL, hour, chunkUntil)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, rebuildToolHourLockSQL, hour, chunkUntil)
+		}
+		if err == nil {
+			_, err = tx.ExecContext(ctx, rebuildToolHourSQL, hour, chunkUntil)
+		}
+		if err == nil {
+			err = s.auditTx(ctx, tx, actor, "pricing.historical_reprice", "usage_events", map[string]any{
+				"provider": req.Provider, "model": req.Model, "model_prefix": req.ModelPrefix,
+				"from": chunkReq.From, "until": chunkReq.Until, "policy_version": req.Policy,
+				"rows": result.Rows, "old_total_usd": result.OldTotal, "new_total_usd": result.NewTotal,
+			})
+		}
+		if err != nil {
+			_ = tx.Rollback()
+			return HistoricalRepriceResult{}, fmt.Errorf("reprice hour %s: %w", hour.Format(time.RFC3339), err)
+		}
+		if err = tx.Commit(); err != nil {
+			return HistoricalRepriceResult{}, fmt.Errorf("commit reprice hour %s: %w", hour.Format(time.RFC3339), err)
+		}
 	}
 	result.Applied = true
 	s.parityHealthy.Store(false)
