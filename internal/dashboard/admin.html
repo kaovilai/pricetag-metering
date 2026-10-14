@@ -2482,7 +2482,7 @@ fetch("/whoami").then(function(r){return r.json()}).then(function(d){
 function pmEsc(s){return String(s==null?'':s).replace(/[&<>"]/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c];});}
 function pmPrice(v){v=+v||0;return v>0?'$'+v.toLocaleString(undefined,{maximumFractionDigits:3}):'<span class="pm-zero">–</span>';}
 function pmDiscount(m){if(m.discount_percent!=null)return +m.discount_percent||0;var p=[['input_cost_per_mtok','list_input_cost_per_mtok'],['output_cost_per_mtok','list_output_cost_per_mtok'],['cache_read_cost_per_mtok','list_cache_read_cost_per_mtok'],['cache_write_cost_per_mtok','list_cache_write_cost_per_mtok']],d=[];p.forEach(function(x){var e=+m[x[0]]||0,l=+m[x[1]]||0;if(l>0)d.push(100*(1-e/l));});if(!d.length)return null;return Math.max(0,Math.min.apply(null,d));}
-function pmRate(e,l,free,d){var baseline=+l||0,label='list';if(!(baseline>0)&&(+d||0)>0&&(+(e)||0)>0){baseline=(+e)/(1-(+d/100));label='before discount';}var out=(+e||0)>0?pmPrice(e):(free?'$0':'<span class="pm-zero">–</span>');if(baseline>0&&Math.abs((+e||0)-baseline)>.000001)out+='<div class="pm-list">'+label+' '+pmPrice(baseline)+'</div>';return out;}
+function pmRate(e,l,free,d){var baseline=+l||0;if(!(baseline>0)&&(+d||0)>0&&(+(e)||0)>0)baseline=(+e)/(1-(+d/100));var out=(+e||0)>0?pmPrice(e):(free?'$0':'<span class="pm-zero">–</span>');if(baseline>0&&Math.abs((+e||0)-baseline)>.000001)out+='<div class="pm-list">reference '+pmPrice(baseline)+'</div>';return out;}
 function openPricing(){document.getElementById('pricing-ov').classList.add('show');loadPricing();}
 function closePricing(){document.getElementById('pricing-ov').classList.remove('show');}
 function loadPricing(){
