@@ -2,6 +2,7 @@ package storage
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -10,8 +11,6 @@ import (
 
 	"github.com/redhat-et/pricetag-metering/internal/pricing"
 )
-
-const maxHistoricalRepriceRows int64 = 100_000
 
 // HistoricalRepriceRequest scopes a deterministic recomputation from token
 // counts and the current effective model_pricing rows. It never multiplies an
@@ -23,22 +22,29 @@ type HistoricalRepriceRequest struct {
 	From        time.Time `json:"from"`
 	Until       time.Time `json:"until"`
 	Policy      string    `json:"policy_version"`
-	PolicyHash  string    `json:"policy_hash"`
 	Confirm     bool      `json:"confirm"`
+	OperationID string    `json:"operation_id"`
+	PolicyHash  string    `json:"policy_hash"`
 }
 
 type HistoricalRepriceResult struct {
-	Rows       int64     `json:"rows"`
-	OldTotal   float64   `json:"old_total_usd"`
-	NewTotal   float64   `json:"new_total_usd"`
-	From       time.Time `json:"from"`
-	Until      time.Time `json:"until"`
-	Applied    bool      `json:"applied"`
-	Policy     string    `json:"policy_version,omitempty"`
-	PolicyHash string    `json:"policy_hash,omitempty"`
-	MaxRows    int64     `json:"max_rows"`
+	Rows            int64     `json:"rows"`
+	OldTotal        float64   `json:"old_total_usd"`
+	NewTotal        float64   `json:"new_total_usd"`
+	From            time.Time `json:"from"`
+	Until           time.Time `json:"until"`
+	Applied         bool      `json:"applied"`
+	Policy          string    `json:"policy_version,omitempty"`
+	OperationID     string    `json:"operation_id,omitempty"`
+	PolicyHash      string    `json:"policy_hash,omitempty"`
+	Status          string    `json:"status,omitempty"`
+	CompletedChunks int       `json:"completed_chunks,omitempty"`
+	TotalChunks     int       `json:"total_chunks,omitempty"`
 }
 
+// discountPolicyHash is retained as a stable policy-only fingerprint for
+// callers/tests; operation.PolicyHash additionally binds the model_pricing
+// snapshot selected by the request.
 func discountPolicyHash(policy pricing.DiscountPolicy) (string, error) {
 	raw, err := json.Marshal(policy)
 	if err != nil {
@@ -46,6 +52,81 @@ func discountPolicyHash(policy pricing.DiscountPolicy) (string, error) {
 	}
 	sum := sha256.Sum256(raw)
 	return hex.EncodeToString(sum[:]), nil
+}
+
+type repriceOperation struct {
+	ID, Actor, Provider, Model, ModelPrefix string
+	From, Until                             time.Time
+	PolicyVersion, PolicyHash, Status       string
+	TotalChunks, CompletedChunks            int
+}
+
+func newOperationID() (string, error) {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(b), nil
+}
+
+func (s *Store) pricingSnapshotHash(ctx context.Context, where string, args []any, policyVersion string) (string, error) {
+	q := fmt.Sprintf(`SELECT COALESCE(p.model,''), COALESCE(p.provider,''),
+		COALESCE(p.input_cost_per_mtok,0), COALESCE(p.output_cost_per_mtok,0),
+		COALESCE(p.cache_read_cost_per_mtok,0), COALESCE(p.cache_write_cost_per_mtok,0)
+		FROM usage_events e LEFT JOIN model_pricing p ON p.model=e.model
+		WHERE %s GROUP BY p.model,p.provider,p.input_cost_per_mtok,p.output_cost_per_mtok,p.cache_read_cost_per_mtok,p.cache_write_cost_per_mtok
+		ORDER BY p.model,p.provider`, where[5:])
+	rows, err := s.db.QueryContext(ctx, q, args...)
+	if err != nil {
+		return "", err
+	}
+	defer rows.Close()
+	h := sha256.New()
+	_, _ = h.Write([]byte(policyVersion + "\n"))
+	for rows.Next() {
+		var model, provider string
+		var in, out, read, write float64
+		if err := rows.Scan(&model, &provider, &in, &out, &read, &write); err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "%s\x00%s\x00%.12g\x00%.12g\x00%.12g\x00%.12g\n", model, provider, in, out, read, write)
+	}
+	if err := rows.Err(); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
+}
+
+func (s *Store) createRepriceOperation(ctx context.Context, op repriceOperation, result HistoricalRepriceResult) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO pricing_reprice_operations
+		(operation_id,actor,provider,model,model_prefix,from_ts,until_ts,policy_version,policy_hash,status,total_chunks,rows,old_total_usd,new_total_usd)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+		op.ID, op.Actor, op.Provider, op.Model, op.ModelPrefix, op.From, op.Until, op.PolicyVersion, op.PolicyHash, op.Status, op.TotalChunks, result.Rows, result.OldTotal, result.NewTotal)
+	return err
+}
+
+func (s *Store) loadRepriceOperation(ctx context.Context, id string) (repriceOperation, error) {
+	var op repriceOperation
+	err := s.db.QueryRowContext(ctx, `SELECT operation_id,actor,provider,model,model_prefix,from_ts,until_ts,policy_version,policy_hash,status,total_chunks,completed_chunks FROM pricing_reprice_operations WHERE operation_id=$1`, id).Scan(
+		&op.ID, &op.Actor, &op.Provider, &op.Model, &op.ModelPrefix, &op.From, &op.Until, &op.PolicyVersion, &op.PolicyHash, &op.Status, &op.TotalChunks, &op.CompletedChunks)
+	return op, err
+}
+
+func (s *Store) updateRepriceProgress(ctx context.Context, id, status, problem string, completed int) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE pricing_reprice_operations SET status=$2, completed_chunks=$3, error=$4, updated_at=now() WHERE operation_id=$1`, id, status, completed, problem)
+	return err
+}
+
+func (s *Store) RepriceOperationStatus(ctx context.Context, id string) (HistoricalRepriceResult, error) {
+	op, err := s.loadRepriceOperation(ctx, id)
+	if err != nil {
+		return HistoricalRepriceResult{}, err
+	}
+	var result HistoricalRepriceResult
+	result.OperationID, result.PolicyHash, result.Policy = op.ID, op.PolicyHash, op.PolicyVersion
+	result.From, result.Until = op.From, op.Until
+	result.Status, result.CompletedChunks, result.TotalChunks = op.Status, op.CompletedChunks, op.TotalChunks
+	return result, nil
 }
 
 func buildRepriceWhere(req HistoricalRepriceRequest) (string, []any, error) {
@@ -99,13 +180,6 @@ func (s *Store) RepriceHistorical(ctx context.Context, actor string, req Histori
 	if req.Policy != activePolicy.Version {
 		return HistoricalRepriceResult{}, fmt.Errorf("policy_version %q is not the active policy %q", req.Policy, activePolicy.Version)
 	}
-	policyHash, err := discountPolicyHash(activePolicy)
-	if err != nil {
-		return HistoricalRepriceResult{}, err
-	}
-	if req.Confirm && req.PolicyHash != policyHash {
-		return HistoricalRepriceResult{}, fmt.Errorf("policy_hash does not match the active policy; run a new dry run")
-	}
 	where, args, err := buildRepriceWhere(req)
 	if err != nil {
 		return HistoricalRepriceResult{}, err
@@ -115,27 +189,59 @@ func (s *Store) RepriceHistorical(ctx context.Context, actor string, req Histori
 		WHERE %s`, costUSDExpr, where[5:])
 	var result HistoricalRepriceResult
 	result.From, result.Until, result.Policy = req.From, req.Until, req.Policy
-	result.PolicyHash, result.MaxRows = policyHash, maxHistoricalRepriceRows
 	if err := s.db.QueryRowContext(ctx, query, args...).Scan(&result.Rows, &result.OldTotal, &result.NewTotal); err != nil {
 		return HistoricalRepriceResult{}, err
 	}
+	snapshotHash, err := s.pricingSnapshotHash(ctx, where, args, req.Policy)
+	if err != nil {
+		return HistoricalRepriceResult{}, fmt.Errorf("create pricing snapshot: %w", err)
+	}
+	result.PolicyHash = snapshotHash
 	if !req.Confirm {
+		id, err := newOperationID()
+		if err != nil {
+			return HistoricalRepriceResult{}, err
+		}
+		fromHour, untilHour := req.From.UTC().Truncate(time.Hour), req.Until.UTC().Truncate(time.Hour)
+		totalChunks := int(untilHour.Sub(fromHour) / time.Hour)
+		if totalChunks < 1 {
+			totalChunks = 1
+		}
+		if err := s.createRepriceOperation(ctx, repriceOperation{ID: id, Actor: actor, Provider: req.Provider, Model: req.Model, ModelPrefix: req.ModelPrefix, From: req.From, Until: req.Until, PolicyVersion: req.Policy, PolicyHash: snapshotHash, Status: "dry_run", TotalChunks: totalChunks}, result); err != nil {
+			return HistoricalRepriceResult{}, err
+		}
+		result.OperationID, result.Status, result.TotalChunks = id, "dry_run", totalChunks
 		return result, nil
 	}
-	if result.Rows > maxHistoricalRepriceRows {
-		return HistoricalRepriceResult{}, fmt.Errorf("repricing affects %d rows; maximum per operation is %d", result.Rows, maxHistoricalRepriceRows)
+	if req.OperationID == "" || req.PolicyHash == "" {
+		return HistoricalRepriceResult{}, fmt.Errorf("operation_id and policy_hash are required for confirmation")
+	}
+	if req.PolicyHash != snapshotHash {
+		return HistoricalRepriceResult{}, fmt.Errorf("pricing snapshot changed; run a new dry-run")
+	}
+	op, err := s.loadRepriceOperation(ctx, req.OperationID)
+	if err != nil {
+		return HistoricalRepriceResult{}, fmt.Errorf("load repricing operation: %w", err)
+	}
+	if op.PolicyHash != req.PolicyHash || op.PolicyVersion != req.Policy || op.Provider != req.Provider || op.Model != req.Model || op.ModelPrefix != req.ModelPrefix || !op.From.Equal(req.From) || !op.Until.Equal(req.Until) {
+		return HistoricalRepriceResult{}, fmt.Errorf("confirmation does not match repricing operation")
+	}
+	if op.Status == "completed" {
+		result.OperationID, result.Status, result.CompletedChunks, result.TotalChunks = op.ID, op.Status, op.CompletedChunks, op.TotalChunks
+		result.Applied = true
+		return result, nil
+	}
+	if err := s.updateRepriceProgress(ctx, op.ID, "running", "", op.CompletedChunks); err != nil {
+		return HistoricalRepriceResult{}, err
 	}
 
 	fromHour, untilHour := req.From.UTC().Truncate(time.Hour), req.Until.UTC().Truncate(time.Hour)
-	if req.Until.UTC().After(untilHour) {
-		untilHour = untilHour.Add(time.Hour)
-	}
 	if !fromHour.Before(untilHour) {
 		untilHour = fromHour.Add(time.Hour)
 	}
 	// Apply one UTC hour per transaction. This bounds locks, WAL, and rollback
 	// scope even when an operator requests a long historical range.
-	for hour := fromHour; hour.Before(untilHour); hour = hour.Add(time.Hour) {
+	for i, hour := 0, fromHour.Add(time.Duration(op.CompletedChunks)*time.Hour); hour.Before(untilHour); i, hour = i+1, hour.Add(time.Hour) {
 		chunkUntil := hour.Add(time.Hour)
 		if chunkUntil.After(untilHour) {
 			chunkUntil = untilHour
@@ -182,13 +288,22 @@ func (s *Store) RepriceHistorical(ctx context.Context, actor string, req Histori
 		}
 		if err != nil {
 			_ = tx.Rollback()
+			_ = s.updateRepriceProgress(ctx, op.ID, "failed", err.Error(), op.CompletedChunks+i)
 			return HistoricalRepriceResult{}, fmt.Errorf("reprice hour %s: %w", hour.Format(time.RFC3339), err)
 		}
 		if err = tx.Commit(); err != nil {
+			_ = s.updateRepriceProgress(ctx, op.ID, "failed", err.Error(), op.CompletedChunks+i)
 			return HistoricalRepriceResult{}, fmt.Errorf("commit reprice hour %s: %w", hour.Format(time.RFC3339), err)
 		}
+		if err := s.updateRepriceProgress(ctx, op.ID, "running", "", op.CompletedChunks+i+1); err != nil {
+			return HistoricalRepriceResult{}, err
+		}
+	}
+	if err := s.updateRepriceProgress(ctx, op.ID, "completed", "", op.TotalChunks); err != nil {
+		return HistoricalRepriceResult{}, err
 	}
 	result.Applied = true
+	result.OperationID, result.Status, result.CompletedChunks, result.TotalChunks = op.ID, "completed", op.TotalChunks, op.TotalChunks
 	s.parityHealthy.Store(false)
 	s.servingRollups.Store(false)
 	return result, nil
