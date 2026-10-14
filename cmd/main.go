@@ -102,6 +102,17 @@ func main() {
 	ctx := context.Background()
 	litellmPrices, pricingSource := pricing.LoadPrices(ctx)
 	if len(litellmPrices) > 0 {
+		policy, policyErr := store.GetPricingDiscountPolicy(ctx)
+		if policyErr != nil {
+			slog.Error("pricing discount policy unavailable", "error", policyErr)
+			os.Exit(1)
+		}
+		litellmPrices, changed, discountErr := pricing.ApplyDiscounts(litellmPrices, policy)
+		if discountErr != nil {
+			slog.Error("pricing discount policy invalid", "error", discountErr)
+			os.Exit(1)
+		}
+		slog.Info("pricing discount policy applied", "version", policy.Version, "models_changed", len(changed))
 		storePrices := make([]storage.ModelPrice, len(litellmPrices))
 		for i, p := range litellmPrices {
 			storePrices[i] = storage.ModelPrice{
@@ -216,6 +227,7 @@ func main() {
 	modelCatalogHandler := handler.NewModelCatalogHandler(k8sClient)
 	userModelPolicyHandler := handler.NewUserModelPolicyHandler(store)
 	quotaAdminHandler := handler.NewQuotaAdminHandler(store)
+	pricingDiscountHandler := handler.NewPricingDiscountHandler(store)
 	modelPolicyAdminHandler := handler.NewModelPolicyAdminHandler(store)
 	auth := authHandler.RequireAuth
 
@@ -337,6 +349,7 @@ func main() {
 	mux.HandleFunc("/api/v1/admin/models/provider/", auth(handler.RequirePartnerSuperAdmin(cfg, store, adminHandler.HandleUpdateProvider)))
 	mux.HandleFunc("/api/v1/admin/pricing/refresh", auth(handler.RequirePartnerSuperAdmin(cfg, store, handler.NewPricingRefreshHandler(store).HandleRefresh)))
 	mux.HandleFunc("/api/v1/admin/safety-net", auth(handler.RequirePartnerSuperAdmin(cfg, store, quotaAdminHandler.HandlePolicy)))
+	mux.HandleFunc("/api/v1/admin/pricing-discounts", auth(handler.RequirePartnerSuperAdmin(cfg, store, pricingDiscountHandler.Handle)))
 	mux.HandleFunc("/api/v1/admin/model-policies", auth(handler.RequirePartnerSuperAdmin(cfg, store, modelPolicyAdminHandler.HandleList)))
 	// OpenShift users/entitlements management (redesigned admin page).
 
