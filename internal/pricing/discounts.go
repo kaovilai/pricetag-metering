@@ -100,6 +100,18 @@ func ApplyDiscounts(prices []ModelPrice, policy DiscountPolicy) ([]ModelPrice, [
 	return result, changed, nil
 }
 
+// DiscountPercent reports the policy discount for a model without changing
+// any rates. It is used by presentation layers when a vendor-list baseline is
+// intentionally unavailable (for example, Vertex reseller pricing).
+func DiscountPercent(price ModelPrice, policy DiscountPolicy) (float64, bool) {
+	for _, rule := range policy.Rules {
+		if matchesDiscount(price, rule) {
+			return (1 - rule.Multiplier) * 100, true
+		}
+	}
+	return 0, false
+}
+
 func matchesDiscount(price ModelPrice, rule DiscountRule) bool {
 	provider := normalizeDiscountProvider(rule.Provider)
 	model := strings.ToLower(price.Model)
