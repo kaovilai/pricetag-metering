@@ -57,12 +57,17 @@ func ValidateDiscountPolicy(policy DiscountPolicy) error {
 	}
 	for i, left := range policy.Rules {
 		for _, right := range policy.Rules[i+1:] {
-			if strings.EqualFold(left.Provider, right.Provider) && prefixesOverlap(left.ModelPrefix, right.ModelPrefix) {
+			if providersOverlap(left.Provider, right.Provider) && prefixesOverlap(left.ModelPrefix, right.ModelPrefix) {
 				return fmt.Errorf("rules %q and %q overlap; use one deterministic rule", left.Name, right.Name)
 			}
 		}
 	}
 	return nil
+}
+
+func providersOverlap(a, b string) bool {
+	a, b = strings.ToLower(strings.TrimSpace(a)), strings.ToLower(strings.TrimSpace(b))
+	return a == "" || b == "" || a == b
 }
 
 func prefixesOverlap(a, b string) bool {

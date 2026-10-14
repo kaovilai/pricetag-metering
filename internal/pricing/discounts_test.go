@@ -44,3 +44,16 @@ func TestDiscountPolicyRejectsOverlappingRules(t *testing.T) {
 		t.Fatal("expected overlapping rules to be rejected")
 	}
 }
+
+func TestDiscountPolicyRejectsWildcardProviderOverlap(t *testing.T) {
+	err := ValidateDiscountPolicy(DiscountPolicy{
+		Version: "test",
+		Rules: []DiscountRule{
+			{Name: "all-gemini", ModelPrefix: "gemini-", Multiplier: .8},
+			{Name: "vertex-gemini", Provider: "vertex", ModelPrefix: "gemini-", Multiplier: .78},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected wildcard-provider overlap to be rejected")
+	}
+}

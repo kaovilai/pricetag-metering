@@ -84,11 +84,6 @@ func main() {
 		}
 	}
 
-	// Phase 3 groundwork: freeze cost at insert (live path), and bring the
-	// historical ledger + hourly rollups up to date in the background —
-	// resumable and idempotent, steady-state it checks one meta row.
-	go store.EnsureRollupsBackfilled(context.Background())
-
 	// Phase 3 part B: maintenance loop (refresh recent hours, standing
 	// parity check) runs REGARDLESS of the read switch — keeping the
 	// table reconciled and the parity signal warm is what makes
@@ -178,6 +173,13 @@ func main() {
 			slog.Info("list pricing seeded", "models", len(listSeed), "updated", updated)
 		}
 	}
+
+	// Pricing must be fully seeded, including the durable commercial discount
+	// policy, before cost backfill can freeze previously-null usage_events.cost_usd.
+	// Starting this earlier creates a startup race where historical rows can be
+	// frozen at pre-discount rates (or the opposite), making the accounting
+	// result depend on timing.
+	go store.EnsureRollupsBackfilled(context.Background())
 
 	eventsHandler := handler.NewEventsHandler(store)
 	entitlementsHandler := handler.NewEntitlementsHandler(store, cfg)
